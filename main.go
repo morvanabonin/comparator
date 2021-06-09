@@ -133,6 +133,11 @@ func main() {
 
 		// faz o log do erro da 1ª requisição
 		if errExchange1 != nil {
+			if strings.Contains(errExchange1.Error(), "timeout") && in2 != nil && len(in2.Answer)  == 0 {
+				// se deu timeout no sistema de DNS hoje existente e o novo respondeu, mas com a resposta no valor zero
+				// nós deixamos passar, pois não é um caso de erro
+				continue
+			}
 			log.Printf("Erro ao enviar a questão DNS [%s] (%d) para o IP [%s] com o erro [%s]", dnsQ.Name, lineNumber, IpAddress1, errExchange1.Error())
 			continue
 		}
@@ -140,12 +145,6 @@ func main() {
 		// faz o log do erro da 2ª requisição
 		if errExchange2 != nil {
 			log.Printf("Erro ao enviar a questão DNS [%s] (%d) para o IP [%s] com o erro [%s]", dnsQ.Name, lineNumber, IpAddress2, errExchange2.Error())
-			continue
-		}
-
-		if strings.Contains(errExchange1.Error(), "timeout") && len(in2.Answer)  == 0 {
-			// se deu timeout no sistema de DNS hoje existente e o novo respondeu, mas com a resposta no valor zero
-			// nós deixamos passar, pois não é um caso de erro
 			continue
 		}
 
@@ -214,6 +213,3 @@ func answerExist(m, m2 []dns.RR) bool {
 
 	return true
 }
-
-
-
