@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -29,18 +30,33 @@ type (
 const  (
 	IpAddress1  = "172.30.1.242" // IP do atual DNS
 	Port1       = ":53"
-	IpAddress2 = "127.0.0.1" // IP do serviço que ficará o novo DNS
+	IpAddress2  = "127.0.0.1" // IP do serviço que ficará o novo DNS
 	Port2       = ":53"
 )
 
 // testes
 //const  (
-//	IpAddress1  = "172.30.1.242" // IP do atual DNS
+//	IpAddress1  = "192.168.101.117" //"172.30.1.242" // IP do atual DNS
 //	Port1       = ":53"
 //	IpAddress2  = "192.168.101.117" // IP do serviço que ficará o novo DNS
-//	Port2       = ":1553"
+//	Port2       = ":53"
 //)
 
+var (
+	IgnoreDomains = []string{
+		"x99moyu.net",
+		"duobao369.com",
+		"mktwalmart.com.br",
+		"mktnacional.com.br",
+		"mktsuperbompreco.com.br",
+		"mktmercadorama.com.br",
+		"mkttododia.com.br",
+		"mktbig.com.br",
+		"mktmaxxi.com.br",
+		"mktbigbompreco.com.br",
+		"mta-sts.mail.", // Chuva de requisições
+	}
+)
 // Esse script foi criado para comparar as respostas de uma query/questão de DNS
 // o retorno é para saber qual dessas queries/questões precisam ser trabalhadas,
 // caso o retorno não seja okay
@@ -112,6 +128,16 @@ func main() {
 			log.Panic("Houve erro ao dar Unmarshal", err.Error())
 		}
 
+		if ignoreDomains(dnsQ.Name) {
+			continue
+		}
+
+		// se o dnsQ.Name vier nesse padrão 05c49616-idc
+		// nos ignoraremos
+		if ignoreHexIPDomains(dnsQ) {
+			continue
+		}
+
 		// Cria a estrutura da mensagem/questão DNS, uma de cada vez
 		// de acordo Go https://pkg.go.dev/github.com/miekg/dns#Question
 		m := new(dns.Msg)
@@ -138,13 +164,14 @@ func main() {
 				// nós deixamos passar, pois não é um caso de erro
 				continue
 			}
-			log.Printf("Erro ao enviar a questão DNS [%s] (%d) para o IP [%s] com o erro [%s]", dnsQ.Name, lineNumber, IpAddress1, errExchange1.Error())
+
+			log.Printf("Erro ao enviar a questão DNS [%s] tipo %s, linha nº=%d, para o IP=[%s] com o erro [%s]", dnsQ.Name, dns.Type(dnsQ.Qtype).String(), lineNumber, IpAddress1, errExchange1.Error())
 			continue
 		}
 
 		// faz o log do erro da 2ª requisição
 		if errExchange2 != nil {
-			log.Printf("Erro ao enviar a questão DNS [%s] (%d) para o IP [%s] com o erro [%s]", dnsQ.Name, lineNumber, IpAddress2, errExchange2.Error())
+			log.Printf("Erro ao enviar a questão DNS [%s] tipo %s, linha nº=%d, para o IP=[%s] com o erro [%s]", dnsQ.Name, dns.Type(dnsQ.Qtype).String(), lineNumber, IpAddress2, errExchange2.Error())
 			continue
 		}
 
@@ -152,20 +179,28 @@ func main() {
 		// caso não seja grava em um arquivo as respostas para consulta
 		if len(in1.Answer) != len(in2.Answer) {
 			// gravar em um file as queries de respostas
-			msg := fmt.Sprintf("Os arrays de respostas são de tamanhos diferentes [%+v] e [%+v]", in1.Answer, in2.Answer)
+			msg := fmt.Sprintf(timeNow() + " Os arrays da questão (%+v) e respostas [%+v] e [%+v] são de tamanhos diferentes.", m.Question, in1.Answer, in2.Answer)
 			writeAnswerFile(msg)
 			continue
 		}
 
-		// Verifica utilizando a função DeepEqual se os as duas respostas são idênticas
-		// caso não seja, grava em arquivo as respostas para consulta
-		if !answerExist(in1.Answer, in2.Answer) {
-			// gravar em um file as queries de respostas
-			msg := fmt.Sprintf("As respostas não são idênticas [%+v] e [%+v]", in1.Answer, in2.Answer)
-			writeAnswerFile(msg)
-			continue
-		}
+		if in1.Extra != nil && in2 != nil {
+			if len(in1.Extra) != len(in2.Extra) {
+				// gravar em um file as queries de respostas
+				msg := fmt.Sprintf(timeNow() + " Os arrays de da questão (%+v) e Extras [%+v] e [%+v] são de tamanhos diferentes.", m.Question, in1.Extra, in2.Extra)
+				writeAnswerFile(msg)
+				continue
+			}
 
+			// Verifica utilizando a função DeepEqual se os as duas respostas são idênticas
+			// caso não seja, grava em arquivo as respostas para consulta
+			if !answerExist(in1.Extra, in2.Extra) {
+				// gravar em um file as queries de respostas
+				msg := fmt.Sprintf(timeNow() + " Os Extras não são idênticas [%+v] e [%+v]", in1.Extra, in2.Extra)
+				writeAnswerFile(msg)
+				continue
+			}
+		}
 	}
 }
 
@@ -212,4 +247,31 @@ func answerExist(m, m2 []dns.RR) bool {
 	}
 
 	return true
+}
+
+// ignoreDomains ignora domínios da blacklist
+func ignoreDomains(q string) bool {
+	for _, domain := range IgnoreDomains {
+		if strings.Contains(q, domain) {
+			return true
+		}
+	}
+	return false
+}
+
+// ignoreHexIPDomains
+func ignoreHexIPDomains(questionDNS *QuestionDNS) bool {
+	var qname string = questionDNS.Name
+	var qtype string = dns.Type(questionDNS.Qtype).String()
+
+	re := regexp.MustCompile(`^[a-f0-9]{8}[^a-z0-9]`)
+	if re.MatchString(qname) && qtype == "TXT" {
+		return true
+	}
+
+	return false
+}
+
+func timeNow() string {
+	return time.Now().Format("02-Jan-2006 15:04:05")
 }
