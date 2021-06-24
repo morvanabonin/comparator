@@ -23,24 +23,26 @@ type (
 		Qtype  uint16 `json:"Qtype"`
 		Qclass uint16 `json:"Qclass"`
 	}
-) 
+)
 
 // Dados já do teste real
 // prod
-const  (
-	IpAddress1  = "172.30.1.242" // IP do atual DNS
-	Port1       = ":53"
-	IpAddress2  = "127.0.0.1" // IP do serviço que ficará o novo DNS
-	Port2       = ":53"
-)
+//const (
+//	IpAddress1 = "172.30.1.242" // IP do atual DNS
+//	Port1      = ":53"
+//	IpAddress2 = "127.0.0.1" // IP do serviço que ficará o novo DNS
+//	Port2      = ":53"
+//  ChannelQtd = 100
+//)
 
 // testes
-//const  (
-//	IpAddress1  = "192.168.101.117" //"172.30.1.242" // IP do atual DNS
-//	Port1       = ":53"
-//	IpAddress2  = "192.168.101.117" // IP do serviço que ficará o novo DNS
-//	Port2       = ":53"
-//)
+const  (
+	IpAddress1  = "192.168.101.117" // "172.30.1.242" IP do atual DNS
+	Port1       = ":53"
+	IpAddress2  = "192.168.101.117" // IP do serviço que ficará o novo DNS
+	Port2       = ":1553"
+	ChannelQtd  = 5
+)
 
 var (
 	IgnoreDomains = []string{
@@ -56,7 +58,10 @@ var (
 		"mktbigbompreco.com.br",
 		"mta-sts.mail.", // Chuva de requisições
 	}
+
+	executeExchange chan QuestionDNS
 )
+
 // Esse script foi criado para comparar as respostas de uma query/questão de DNS
 // o retorno é para saber qual dessas queries/questões precisam ser trabalhadas,
 // caso o retorno não seja okay
@@ -71,10 +76,10 @@ func main() {
 	}()
 
 	// prod
-	var pathFile string = "/var/log/dinamize/questions-dns/Questions-DNS.json"
+	// var pathFile string = "/var/log/dinamize/questions-dns/Questions-DNS.json"
 
 	// testes
-	// var pathFile string = "/var/log/dinamize/dev/morvana.bonin/dns-questions/Questions-DNS.json"
+	var pathFile = "/var/log/dinamize/dev/morvana.bonin/dns-questions/Questions-DNS.json"
 
 	path := strings.TrimSpace(filepath.Clean(pathFile))
 
@@ -86,6 +91,11 @@ func main() {
 
 	defer f.Close()
 
+	// chamado em uma goroutine do compare passando para o for a quantidade de vias
+	for i := 1; i <= ChannelQtd; i++ {
+		go compare()
+	}
+
 	// cria e retorna um novo Leitor (Reader) cuja o buffer tem um tamanho default
 	reader := bufio.NewReader(f)
 
@@ -95,16 +105,10 @@ func main() {
 		var line []byte
 		var isPrefix bool
 
-		// sleep 1 segundo
-		time.Sleep(100 * time.Millisecond)
-
 		// É utilizada a função ReadLine para leitura de cada linha do arquivo e retornar em byte
 		// https://pkg.go.dev/bufio#Reader.ReadLine
 		line, isPrefix, err = reader.ReadLine()
 		lineNumber++
-
-		// ponto de linha para ver a execução
-		fmt.Print(".")
 
 		if isPrefix {
 			log.Println("A linha é muito longa e foi quebrada retornando apenas a primeira parte", isPrefix)
@@ -121,8 +125,8 @@ func main() {
 		//	Qtype uint16 `json:"Qtype"`
 		//	Qclass uint16 `json:"Qclass"`
 		// }
-		dnsQ := new(QuestionDNS)
-		err = json.Unmarshal(line, dnsQ)
+		dnsQ := QuestionDNS{}
+		err = json.Unmarshal(line, &dnsQ)
 
 		if err != nil {
 			log.Panic("Houve erro ao dar Unmarshal", err.Error())
@@ -138,6 +142,33 @@ func main() {
 			continue
 		}
 
+		// o channel recebe a estrutura de DNS - dnsQ
+		executeExchange <- dnsQ
+	}
+}
+
+// writeAnswerFile escreve no arquivo
+func writeAnswerFile(message string) {
+	file, err := os.OpenFile("Comparator-DNS-Error.log", os.O_CREATE|os.O_APPEND|os.O_RDWR, 0766)
+
+	if err != nil {
+		log.Fatalf("Houve falha ao criar o artquivo: %s", err.Error())
+	}
+
+	defer file.Close()
+	byt := []byte(message + "\n")
+
+	if _, errWrite := file.Write(byt); errWrite != nil {
+		log.Panicf("Houve falha ao escrever no artquivo: %s", errWrite.Error())
+	}
+
+}
+
+// compare função que cria as questões DNS e faz o exchange, além de escrever os retornos
+func compare() {
+	for {
+		// channel
+		dnsQ := <-executeExchange
 		// Cria a estrutura da mensagem/questão DNS, uma de cada vez
 		// de acordo Go https://pkg.go.dev/github.com/miekg/dns#Question
 		m := new(dns.Msg)
@@ -159,67 +190,112 @@ func main() {
 
 		// faz o log do erro da 1ª requisição
 		if errExchange1 != nil {
-			if strings.Contains(errExchange1.Error(), "timeout") && in2 != nil && len(in2.Answer)  == 0 {
+			fmt.Printf("x")
+
+			if strings.Contains(errExchange1.Error(), "timeout") && in2 != nil && len(in2.Answer) == 0 {
 				// se deu timeout no sistema de DNS hoje existente e o novo respondeu, mas com a resposta no valor zero
 				// nós deixamos passar, pois não é um caso de erro
 				continue
 			}
 
-			log.Printf("Erro ao enviar a questão DNS [%s] tipo %s, linha nº=%d, para o IP=[%s] com o erro [%s]", dnsQ.Name, dns.Type(dnsQ.Qtype).String(), lineNumber, IpAddress1, errExchange1.Error())
+			msg := fmt.Sprintf("{timeout} Erro ao enviar a questão DNS [%s] tipo %s, para o IP=[%s] com o erro [%s]", dnsQ.Name, dns.Type(dnsQ.Qtype).String(), IpAddress1, errExchange1.Error())
+			writeAnswerFile(msg)
 			continue
 		}
 
 		// faz o log do erro da 2ª requisição
 		if errExchange2 != nil {
-			log.Printf("Erro ao enviar a questão DNS [%s] tipo %s, linha nº=%d, para o IP=[%s] com o erro [%s]", dnsQ.Name, dns.Type(dnsQ.Qtype).String(), lineNumber, IpAddress2, errExchange2.Error())
+			fmt.Printf("x")
+
+			msg := fmt.Sprintf("{timeout} Erro ao enviar a questão DNS [%s] tipo %s, para o IP=[%s] com o erro [%s]", dnsQ.Name, dns.Type(dnsQ.Qtype).String(), IpAddress2, errExchange2.Error())
+			writeAnswerFile(msg)
 			continue
 		}
 
 		// Compara se o slice do response são de tamanhos iguais
 		// caso não seja grava em um arquivo as respostas para consulta
 		if len(in1.Answer) != len(in2.Answer) {
+			fmt.Printf("!")
+
 			// gravar em um file as queries de respostas
-			msg := fmt.Sprintf(timeNow() + " Os arrays da questão (%+v) e respostas [%+v] e [%+v] são de tamanhos diferentes.", m.Question, in1.Answer, in2.Answer)
+			msg := fmt.Sprintf(timeNow()+" Os arrays da questão (%+v) e respostas [%+v] e [%+v] são de tamanhos diferentes.", m.Question, in1.Answer, in2.Answer)
 			writeAnswerFile(msg)
 			continue
 		}
 
-		if in1.Extra != nil && in2 != nil {
+		// Verifica se os as duas respostas são idênticas
+		// caso não seja, grava em arquivo as respostas para consulta
+		if !answerExist(in1.Answer, in2.Answer) {
+			fmt.Printf("!")
+
+			// gravar em um file as queries de respostas
+			msg := fmt.Sprintf("As respostas não são idênticas [%+v] e [%+v]", in1.Answer, in2.Answer)
+			writeAnswerFile(msg)
+			continue
+		}
+
+		// Verifica se veio Extra no retorno do DNS
+		if in1.Extra != nil && in2.Extra != nil {
 			if len(in1.Extra) != len(in2.Extra) {
+				fmt.Printf("!")
+
 				// gravar em um file as queries de respostas
-				msg := fmt.Sprintf(timeNow() + " Os arrays de da questão (%+v) e Extras [%+v] e [%+v] são de tamanhos diferentes.", m.Question, in1.Extra, in2.Extra)
+				msg := fmt.Sprintf(timeNow()+" Os arrays da questão (%+v) e Extras [%+v] e [%+v] são de tamanhos diferentes.", m.Question, in1.Extra, in2.Extra)
 				writeAnswerFile(msg)
 				continue
 			}
 
-			// Verifica utilizando a função DeepEqual se os as duas respostas são idênticas
+			// Verifica se os as dois Extras são idênticos
 			// caso não seja, grava em arquivo as respostas para consulta
-			if !answerExist(in1.Extra, in2.Extra) {
+			if !extraExist(in1.Extra, in2.Extra) {
+				fmt.Printf("!")
+
 				// gravar em um file as queries de respostas
-				msg := fmt.Sprintf(timeNow() + " Os Extras não são idênticas [%+v] e [%+v]", in1.Extra, in2.Extra)
+				msg := fmt.Sprintf(timeNow()+" Os Extras não são idênticas [%+v] e [%+v]", in1.Extra, in2.Extra)
 				writeAnswerFile(msg)
 				continue
 			}
 		}
+
+		// ponto de linha para ver a execução
+		fmt.Print("=")
+
+		// sleep 1 segundo
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
-func writeAnswerFile(message string) {
-	file, err := os.OpenFile("Comparator-DNS-Error.log", os.O_CREATE|os.O_APPEND|os.O_RDWR, 0766)
-
-	if err != nil {
-		log.Fatalf("Houve falha ao criar o artquivo: %s", err.Error())
-	}  
-  
-	defer file.Close()  
-	byt := []byte(message + "\n")
-
-	if _, errWrite := file.Write(byt); errWrite != nil {
-		log.Panicf("Houve falha ao escrever no artquivo: %s", errWrite.Error())
+// ignoreDomains ignora domínios da blacklist
+func ignoreDomains(q string) bool {
+	for _, domain := range IgnoreDomains {
+		if strings.Contains(q, domain) {
+			return true
+		}
 	}
-
+	return false
 }
 
+// ignoreHexIPDomains ignora a entrada de domínios que inicializam com hexadecimal
+func ignoreHexIPDomains(questionDNS QuestionDNS) bool {
+	var (
+		qname = questionDNS.Name
+		qtype = dns.Type(questionDNS.Qtype).String()
+	)
+
+	re := regexp.MustCompile(`^[a-f0-9]{8}[^a-z0-9]`)
+	if re.MatchString(qname) && qtype == "TXT" {
+		return true
+	}
+
+	return false
+}
+
+// timeNow formata o horário para colocar nos logs
+func timeNow() string {
+	return time.Now().Format("02-Jan-2006 15:04:05")
+}
+
+// answerExist verifica se as respostas são iguais
 func answerExist(m, m2 []dns.RR) bool {
 	var exist []bool
 	var check []bool
@@ -249,29 +325,34 @@ func answerExist(m, m2 []dns.RR) bool {
 	return true
 }
 
-// ignoreDomains ignora domínios da blacklist
-func ignoreDomains(q string) bool {
-	for _, domain := range IgnoreDomains {
-		if strings.Contains(q, domain) {
-			return true
+// answerExist verifica se as respostas são iguais
+func extraExist(m, m2 []dns.RR) bool {
+	var exist []bool
+	var check []bool
+
+	for range m2 {
+		check = append(check, false)
+	}
+
+	for i, v1 := range m {
+		exist = append(exist, false)
+
+		for i2, v2 := range m2 {
+			fmt.Printf(v1.String())
+			fmt.Printf(v2.String())
+			if v1.String() == v2.String() && !check[i2] {
+				exist[i] = true
+				check[i2] = true
+				break
+			}
 		}
 	}
-	return false
-}
 
-// ignoreHexIPDomains
-func ignoreHexIPDomains(questionDNS *QuestionDNS) bool {
-	var qname string = questionDNS.Name
-	var qtype string = dns.Type(questionDNS.Qtype).String()
-
-	re := regexp.MustCompile(`^[a-f0-9]{8}[^a-z0-9]`)
-	if re.MatchString(qname) && qtype == "TXT" {
-		return true
+	for _, v := range exist {
+		if !v {
+			return false
+		}
 	}
 
-	return false
-}
-
-func timeNow() string {
-	return time.Now().Format("02-Jan-2006 15:04:05")
+	return true
 }
