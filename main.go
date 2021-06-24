@@ -41,7 +41,7 @@ const  (
 	Port1       = ":53"
 	IpAddress2  = "192.168.101.117" // IP do serviço que ficará o novo DNS
 	Port2       = ":1553"
-	ChannelQtd  = 5
+	ChannelQtd  = 1
 )
 
 var (
@@ -75,6 +75,14 @@ func main() {
 		}
 	}()
 
+	// criação do channel
+	executeExchange = make(chan QuestionDNS)
+
+	// chamado em uma goroutine do compare passando para o for a quantidade de vias
+	for i := 1; i <= ChannelQtd; i++ {
+		go compare()
+	}
+
 	// prod
 	// var pathFile string = "/var/log/dinamize/questions-dns/Questions-DNS.json"
 
@@ -90,11 +98,6 @@ func main() {
 	}
 
 	defer f.Close()
-
-	// chamado em uma goroutine do compare passando para o for a quantidade de vias
-	for i := 1; i <= ChannelQtd; i++ {
-		go compare()
-	}
 
 	// cria e retorna um novo Leitor (Reader) cuja o buffer tem um tamanho default
 	reader := bufio.NewReader(f)
@@ -169,6 +172,7 @@ func compare() {
 	for {
 		// channel
 		dnsQ := <-executeExchange
+
 		// Cria a estrutura da mensagem/questão DNS, uma de cada vez
 		// de acordo Go https://pkg.go.dev/github.com/miekg/dns#Question
 		m := new(dns.Msg)
@@ -187,6 +191,9 @@ func compare() {
 		// envia a mesma pergunta para outro endereço ip e porta
 		client2DNS := new(dns.Client)
 		in2, _, errExchange2 := client2DNS.Exchange(m, IpAddress2+Port2)
+
+		fmt.Println("in1", len(in1.Extra))
+		fmt.Println("in2", len(in2.Extra))
 
 		// faz o log do erro da 1ª requisição
 		if errExchange1 != nil {
@@ -236,6 +243,14 @@ func compare() {
 
 		// Verifica se veio Extra no retorno do DNS
 		if in1.Extra != nil && in2.Extra != nil {
+
+			// se o conjunto da sessão adicional das respostas (conhecido como Extras) de IPs do antigo DNS
+			// for menor que do atual DNS então verifica se os valores que vieram no novo estão contido no DNS antigo,
+			// se estiver, dar continue
+			if len(in1.Extra) < len(in2.Extra) {
+				fmt.Println("chego aqui")
+			}
+
 			if len(in1.Extra) != len(in2.Extra) {
 				fmt.Printf("!")
 
@@ -247,7 +262,7 @@ func compare() {
 
 			// Verifica se os as dois Extras são idênticos
 			// caso não seja, grava em arquivo as respostas para consulta
-			if !extraExist(in1.Extra, in2.Extra) {
+			if !answerExist(in1.Extra, in2.Extra) {
 				fmt.Printf("!")
 
 				// gravar em um file as queries de respostas
@@ -338,8 +353,6 @@ func extraExist(m, m2 []dns.RR) bool {
 		exist = append(exist, false)
 
 		for i2, v2 := range m2 {
-			fmt.Printf(v1.String())
-			fmt.Printf(v2.String())
 			if v1.String() == v2.String() && !check[i2] {
 				exist[i] = true
 				check[i2] = true
