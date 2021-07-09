@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -32,7 +33,7 @@ type (
 //	Port1      = ":53"
 //	IpAddress2 = "127.0.0.1" // IP do serviço que ficará o novo DNS
 //	Port2      = ":53"
-//  ChannelQtd = 100
+//	ChannelQtd = 100
 //)
 
 // testes
@@ -60,6 +61,9 @@ var (
 	}
 
 	executeExchange chan QuestionDNS
+	catchError string
+	catchError2 string
+	waitCompare sync.WaitGroup
 )
 
 // Esse script foi criado para comparar as respostas de uma query/questão de DNS
@@ -79,15 +83,16 @@ func main() {
 	executeExchange = make(chan QuestionDNS)
 
 	// chamado em uma goroutine do compare passando para o for a quantidade de vias
+
 	for i := 1; i <= ChannelQtd; i++ {
 		go compare()
 	}
 
 	// prod
-	// var pathFile string = "/var/log/dinamize/questions-dns/Questions-DNS.json"
+	// pathFile := "/var/log/dinamize/questions-dns/Questions-DNS.json"
 
 	// testes
-	var pathFile = "/var/log/dinamize/dev/morvana.bonin/dns-questions/Questions-DNS.json"
+	pathFile := "/var/log/dinamize/dev/morvana.bonin/dns-questions/Questions-DNS.json"
 
 	path := strings.TrimSpace(filepath.Clean(pathFile))
 
@@ -136,18 +141,22 @@ func main() {
 		}
 
 		if ignoreDomains(dnsQ.Name) {
+			fmt.Printf("-")
 			continue
 		}
 
 		// se o dnsQ.Name vier nesse padrão 05c49616-idc
 		// nos ignoraremos
 		if ignoreHexIPDomains(dnsQ) {
+			fmt.Printf("-")
 			continue
 		}
 
 		// o channel recebe a estrutura de DNS - dnsQ
+		waitCompare.Add(1)
 		executeExchange <- dnsQ
 	}
+	waitCompare.Wait()
 }
 
 // writeAnswerFile escreve no arquivo
@@ -169,9 +178,18 @@ func writeAnswerFile(message string) {
 
 // compare função que cria as questões DNS e faz o exchange, além de escrever os retornos
 func compare() {
+
 	for {
 		// channel
 		dnsQ := <-executeExchange
+
+		// Ignora perguntas de tipo CNAME, pois as mesmas, não passam de lixo
+		// pois CNAME é apenas para respostas
+		if dnsQ.Qtype == 5 {
+			fmt.Printf("-")
+			waitCompare.Done()
+			continue
+		}
 
 		// Cria a estrutura da mensagem/questão DNS, uma de cada vez
 		// de acordo Go https://pkg.go.dev/github.com/miekg/dns#Question
@@ -182,7 +200,8 @@ func compare() {
 		m.Question[0] = dns.Question{
 			Name:   dnsQ.Name,
 			Qtype:  dnsQ.Qtype,
-			Qclass: dnsQ.Qclass}
+			Qclass: dnsQ.Qclass,
+		}
 
 		// envia a pergunta passando o endereço ip e a porta
 		clientDNS := new(dns.Client)
@@ -192,31 +211,60 @@ func compare() {
 		client2DNS := new(dns.Client)
 		in2, _, errExchange2 := client2DNS.Exchange(m, IpAddress2+Port2)
 
-		fmt.Println("in1", len(in1.Extra))
-		fmt.Println("in2", len(in2.Extra))
-
 		// faz o log do erro da 1ª requisição
 		if errExchange1 != nil {
 			fmt.Printf("x")
 
 			if strings.Contains(errExchange1.Error(), "timeout") && in2 != nil && len(in2.Answer) == 0 {
 				// se deu timeout no sistema de DNS hoje existente e o novo respondeu, mas com a resposta no valor zero
-				// nós deixamos passar, pois não é um caso de erro
+				// nós deixamos passar, pois não consideramos como um caso de erro
+				waitCompare.Done()
 				continue
 			}
 
-			msg := fmt.Sprintf("{timeout} Erro ao enviar a questão DNS [%s] tipo %s, para o IP=[%s] com o erro [%s]", dnsQ.Name, dns.Type(dnsQ.Qtype).String(), IpAddress1, errExchange1.Error())
+			if strings.Contains(errExchange1.Error(), "timeout") {
+				catchError = "Timeout: " + errExchange1.Error()
+			}
+
+			msg := fmt.Sprintf(timeNow()+" Erro ao enviar a questão DNS [%s] tipo %s, para o IP=[%s] com o erro [%s]",
+				dnsQ.Name,
+				dns.Type(dnsQ.Qtype).String(),
+				IpAddress1,
+				catchError)
 			writeAnswerFile(msg)
+			waitCompare.Done()
 			continue
 		}
 
 		// faz o log do erro da 2ª requisição
 		if errExchange2 != nil {
+			if strings.Contains(errExchange2.Error(), "timeout") {
+				catchError2 = "Timeout: " + errExchange2.Error()
+			}
+
 			fmt.Printf("x")
 
-			msg := fmt.Sprintf("{timeout} Erro ao enviar a questão DNS [%s] tipo %s, para o IP=[%s] com o erro [%s]", dnsQ.Name, dns.Type(dnsQ.Qtype).String(), IpAddress2, errExchange2.Error())
+			msg := fmt.Sprintf(timeNow()+" Erro ao enviar a questão DNS [%s] tipo %s, para o IP=[%s] com o erro [%s]",
+				dnsQ.Name,
+				dns.Type(dnsQ.Qtype).String(),
+				IpAddress2,
+				catchError2)
 			writeAnswerFile(msg)
+			waitCompare.Done()
 			continue
+		}
+
+		// Condição para ignorar quando for perguntas toscas e sem nexo
+		if dnsQ.Qtype == 1 && len(in1.Answer) == 2 && len(in2.Answer) == 0 {
+			stringAnswer := in1.Answer[0].String()
+			stringAnswer += in1.Answer[1].String()
+			if strings.Contains(stringAnswer, "18.189.133.24") &&
+				strings.Contains(stringAnswer, "3.139.183.150") {
+				fmt.Printf("-")
+				waitCompare.Done()
+				continue
+			}
+
 		}
 
 		// Compara se o slice do response são de tamanhos iguais
@@ -227,36 +275,70 @@ func compare() {
 			// gravar em um file as queries de respostas
 			msg := fmt.Sprintf(timeNow()+" Os arrays da questão (%+v) e respostas [%+v] e [%+v] são de tamanhos diferentes.", m.Question, in1.Answer, in2.Answer)
 			writeAnswerFile(msg)
+			waitCompare.Done()
 			continue
 		}
+
+		// Gambeta para quando as respostas forem iguais a este caso
+		// dns-server01.dinamize.com -> ns1.dnzdns.com
+		// dns-server02.dinamize.com -> ns2.dnzdns.com
+		if dnsQ.Qtype == 2 && len(in1.Answer) == 2 && len(in2.Answer) == 2 {
+			stringAnswer := in1.Answer[0].String()
+			stringAnswer += in1.Answer[1].String()
+			if strings.Contains(stringAnswer, "dns-server01.dinamize.com") &&
+				strings.Contains(stringAnswer, "dns-server02.dinamize.com") {
+				fmt.Printf("-")
+				waitCompare.Done()
+				continue
+			}
+		}
+
 
 		// Verifica se os as duas respostas são idênticas
 		// caso não seja, grava em arquivo as respostas para consulta
 		if !answerExist(in1.Answer, in2.Answer) {
+
+			// Aqui vai a lógica de caso seja diferente as respostas, mas essa for do tipo TXT e v=spf1
+			// ordenar os IPs de retorno, ignorando o
+			// MX e /32 e
+			// comparar os mesmos
+			if spfAnswersCompareIps(in1.Answer, in2.Answer) {
+				fmt.Printf("=")
+				waitCompare.Done()
+				continue
+			}
+
 			fmt.Printf("!")
 
 			// gravar em um file as queries de respostas
 			msg := fmt.Sprintf("As respostas não são idênticas [%+v] e [%+v]", in1.Answer, in2.Answer)
 			writeAnswerFile(msg)
+			waitCompare.Done()
 			continue
 		}
 
 		// Verifica se veio Extra no retorno do DNS
 		if in1.Extra != nil && in2.Extra != nil {
 
-			// se o conjunto da sessão adicional das respostas (conhecido como Extras) de IPs do antigo DNS
-			// for menor que do atual DNS então verifica se os valores que vieram no novo estão contido no DNS antigo,
-			// se estiver, dar continue
-			if len(in1.Extra) < len(in2.Extra) {
-				fmt.Println("chego aqui")
-			}
-
 			if len(in1.Extra) != len(in2.Extra) {
+
+				// se o conjunto da sessão adicional das respostas (conhecido como Extras) de IPs do antigo DNS
+				// for menor que do atual DNS então verifica se os valores que vieram no novo estão contido no DNS antigo,
+				// se estiver, dar continue
+				if len(in1.Extra) < len(in2.Extra) {
+					if contains(in1.Extra, in2.Extra) {
+						fmt.Printf("=")
+						waitCompare.Done()
+						continue
+					}
+				}
+
 				fmt.Printf("!")
 
 				// gravar em um file as queries de respostas
 				msg := fmt.Sprintf(timeNow()+" Os arrays da questão (%+v) e Extras [%+v] e [%+v] são de tamanhos diferentes.", m.Question, in1.Extra, in2.Extra)
 				writeAnswerFile(msg)
+				waitCompare.Done()
 				continue
 			}
 
@@ -268,6 +350,7 @@ func compare() {
 				// gravar em um file as queries de respostas
 				msg := fmt.Sprintf(timeNow()+" Os Extras não são idênticas [%+v] e [%+v]", in1.Extra, in2.Extra)
 				writeAnswerFile(msg)
+				waitCompare.Done()
 				continue
 			}
 		}
@@ -277,6 +360,7 @@ func compare() {
 
 		// sleep 1 segundo
 		time.Sleep(100 * time.Millisecond)
+		waitCompare.Done()
 	}
 }
 
@@ -340,20 +424,65 @@ func answerExist(m, m2 []dns.RR) bool {
 	return true
 }
 
-// answerExist verifica se as respostas são iguais
-func extraExist(m, m2 []dns.RR) bool {
+// contains verifica que caso o tamanho das respostas Extras sejam de tamanho diferente,
+// no caso o DNS novo ter mais IP, se esses estão contidos no DNS antigo
+func contains(ex, ex2 []dns.RR) bool {
+	for _, v1 := range ex {
+		for _, v2 := range ex2 {
+			if strings.Contains(v1.String(), v2.String()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// spfAnswersCompareIps
+// Aqui vai a lógica de caso seja diferente as respostas, mas essa for do tipo TXT e v=spf1
+// ordenar os IPs de retorno, ignorando o
+// MX e /32 e
+// comparar os mesmos
+func spfAnswersCompareIps(resp1, resp2 []dns.RR) bool {
+	var retArrayIps1 []string
+	var retArrayIps2 []string
+
+	for _, v1 := range resp1 {
+		retArrayIps1 = arrayIps(v1.String())
+		for _, v2 := range resp2 {
+			retArrayIps2 = arrayIps(v2.String())
+			if orderAndCompare(retArrayIps1, retArrayIps2) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func arrayIps(v string) []string {
+	re := regexp.MustCompile("ip4:.*/[0-9]{2}")
+	ipsFound := re.FindString(v)
+	r := strings.Split(ipsFound, " ")
+	return r
+}
+
+func orderAndCompare(ips1, ips2 []string) bool {
 	var exist []bool
 	var check []bool
 
-	for range m2 {
+	for range ips2 {
 		check = append(check, false)
 	}
 
-	for i, v1 := range m {
+	for i, ip1 := range ips1 {
 		exist = append(exist, false)
 
-		for i2, v2 := range m2 {
-			if v1.String() == v2.String() && !check[i2] {
+		if strings.Contains(ip1, "/32") {
+			ip1 = strings.TrimRight(ip1, "/32")
+		}
+
+		for i2, ip2 := range ips2 {
+			if ip1 == ip2 && !check[i2] {
 				exist[i] = true
 				check[i2] = true
 				break
@@ -368,4 +497,5 @@ func extraExist(m, m2 []dns.RR) bool {
 	}
 
 	return true
+
 }
