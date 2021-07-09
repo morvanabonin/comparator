@@ -459,6 +459,9 @@ func spfAnswersCompareIps(resp1, resp2 []dns.RR) bool {
 	return false
 }
 
+// arrayIps pega a string e com uma regex retira apenas os valores em IPs
+// depois faz um split por espaço e e retorna
+// um slice [ip4:195.195.1.0/25]
 func arrayIps(v string) []string {
 	re := regexp.MustCompile("ip4:.*/[0-9]{2}")
 	ipsFound := re.FindString(v)
@@ -466,6 +469,8 @@ func arrayIps(v string) []string {
 	return r
 }
 
+// orderAndCompare faz comparação entre os IPs retornados na resposta do tipo TXT
+// [ip4:192.168.101.0/32 ip4:195.195.0.0/25 ip4:195.195.1.0/25 ip4:195.195.2.0/26 ip4:195.195.4.0/26]
 func orderAndCompare(ips1, ips2 []string) bool {
 	var exist []bool
 	var check []bool
@@ -477,6 +482,8 @@ func orderAndCompare(ips1, ips2 []string) bool {
 	for i, ip1 := range ips1 {
 		exist = append(exist, false)
 
+		// como o novo sistema de DNS não coloca mais o /32 por se tratar do IP mesmo,
+		// é retirado da resposta do sistema antigo para então comparar
 		if strings.Contains(ip1, "/32") {
 			ip1 = strings.TrimRight(ip1, "/32")
 		}
@@ -497,5 +504,4 @@ func orderAndCompare(ips1, ips2 []string) bool {
 	}
 
 	return true
-
 }
