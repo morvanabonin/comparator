@@ -532,6 +532,15 @@ func compare() {
 			continue
 		}
 
+		// ignoreWhenOldDNSNotDMARCAnswered
+		// ignorar quando o antigo não responder, mas o novo responder com a seguinte resposta
+		// "v=DMARC1;p=reject;"
+		if ignoreWhenOldDNSNotDMARCAnswered(dnsQ, in1, in2) {
+			fmt.Printf("-")
+			waitCompare.Done()
+			continue
+		}
+
 		// se o tipo for A e a resposta do sistema antigo for maior que 0 e
 		// a resposta do DNS novo for igual a 0, ignorar
 		if dnsQ.Qtype == 1 && len(in1.Answer) > 0 && len(in2.Answer) == 0 {
@@ -1093,6 +1102,18 @@ func ignoreNs1Ns2AsAnsweredAtLeastOnce(questionDNS QuestionDNS, in1, in2 *dns.Ms
 func ignoreA0MeuSpfComDomain(questionDNS QuestionDNS) bool {
 	qName := strings.ToLower(questionDNS.Name)
 	if questionDNS.Qtype == 16 && strings.Contains(qName, "a0.meuspf.com.") {
+		return true
+	}
+	return false
+}
+
+// ignoreWhenOldDNSNotDMARCAnswered
+// ignorar quando o antigo não responder, mas o novo responder com a seguinte resposta
+// "v=DMARC1;p=reject;"
+func ignoreWhenOldDNSNotDMARCAnswered(questionDNS QuestionDNS, in1, in2 *dns.Msg) bool {
+	stringAnswer := in2.Answer[0].String()
+	if questionDNS.Qtype == 16 && len(in1.Answer) == 0 &&
+		strings.Contains(stringAnswer, "v=DMARC1;p=reject;") {
 		return true
 	}
 	return false
