@@ -275,8 +275,10 @@ func compare() {
 		dnsQ := <-executeExchange
 
 		// Ignora perguntas de tipo CNAME, pois as mesmas, não passam de lixo
+		// Ignora, também, tipos que não estamos prevendo ou mesmo não existem
+		// Exemplo: TypeHINFO, TypeAXFR,...
 		// pois CNAME é apenas para respostas
-		if dnsQ.Qtype == 5 {
+		if dnsQ.Qtype == 5 || dnsQ.Qtype == 252 || dnsQ.Qtype == 13 || dnsQ.Qtype == 64 {
 			fmt.Printf("-")
 			waitCompare.Done()
 			continue
@@ -300,7 +302,6 @@ func compare() {
 		clientDNS := new(dns.Client)
 		clientDNS.Timeout = 3 * time.Second
 		in1, _, errExchange1 = clientDNS.Exchange(m, IpAddress1+Port1)
-
 
 		// caso dê erro de timeout, em relação ao sistema antigo, faz um novo reenvio
 		if errExchange1 != nil && strings.Contains(errExchange1.Error(), "timeout") {
@@ -386,6 +387,16 @@ func compare() {
 				IpAddress2,
 				errExchange2.Error())
 			writeAnswerFile(msg)
+			waitCompare.Done()
+			continue
+		}
+
+		// ignoreNs1Ns2AsAnsweredAtLeastOnce
+		// ignorar quando
+		// houver no resposta do antigo sistema ns1.dnzdns.com. e ns2.dnzdns.com.
+		// e quando no novo houver a resposta ns1.dnzdns.com. ou ns2.dnzdns.com.
+		if ignoreNs1Ns2AsAnsweredAtLeastOnce(dnsQ, in1, in2) {
+			fmt.Printf("-")
 			waitCompare.Done()
 			continue
 		}
@@ -497,6 +508,15 @@ func compare() {
 				waitCompare.Done()
 				continue
 			}
+		}
+
+		// ignoreGarbageMyrlkDomain
+		// if qName tem 1631878458828.myrlk.com., qType = 1 e nas repostas do antigo sistema tiver os IPs 18.189.133.24 e 3.139.183.150
+		// e a resposta do novo sistema for nil, ignora como sendo certo.
+		if ignoreGarbageMyrlkDomain(dnsQ, in1, in2) {
+			fmt.Printf("-")
+			waitCompare.Done()
+			continue
 		}
 
 		// se o tipo for A e a resposta do sistema antigo for maior que 0 e
@@ -994,15 +1014,15 @@ func ignoreDomainsTurnedInHexWrong(s string, resp string) bool {
 	if err != nil {
 		return false
 	}
-	rIP1, _ := strconv.ParseUint(hexa[2:4], 16, 64)
+	rIP1, err := strconv.ParseUint(hexa[2:4], 16, 64)
 	if err != nil {
 		return false
 	}
-	rIP2, _ := strconv.ParseUint(hexa[4:6], 16, 64)
+	rIP2, err := strconv.ParseUint(hexa[4:6], 16, 64)
 	if err != nil {
 		return false
 	}
-	rIP3, _ := strconv.ParseUint(hexa[6:8], 16, 64)
+	rIP3, err := strconv.ParseUint(hexa[6:8], 16, 64)
 	if err != nil {
 		return false
 	}
@@ -1021,4 +1041,36 @@ func getIPFromAnswer(resp string) net.IP {
 	ipFound := re.FindString(resp)
 	IPAddress := net.ParseIP(ipFound)
 	return IPAddress
+}
+
+// ignoreGarbageMyrlkDomain
+// if qName tem 1631878458828.myrlk.com., qType = 1 e nas repostas do antigo sistema tiver os IPs 18.189.133.24 e 3.139.183.150
+// e a resposta do novo sistema for nil, ignora como sendo certo.
+func ignoreGarbageMyrlkDomain(questionDNS QuestionDNS, in1, in2 *dns.Msg) bool {
+	stringAnswer := in1.Answer[0].String()
+	stringAnswer += in1.Answer[1].String()
+	if questionDNS.Qtype == 1 &&
+		strings.Contains(stringAnswer, "18.189.133.24") &&
+		strings.Contains(stringAnswer, "3.139.183.150") &&
+		len(in2.Answer) == 0 {
+		return true
+	}
+	return false
+}
+
+// ignoreNs1Ns2AsAnsweredAtLeastOnce
+// ignorar quando
+// houver no resposta do antigo sistema ns1.dnzdns.com. e ns2.dnzdns.com.
+// e quando no novo houver a resposta ns1.dnzdns.com. ou ns2.dnzdns.com.
+func ignoreNs1Ns2AsAnsweredAtLeastOnce(questionDNS QuestionDNS, in1, in2 *dns.Msg) bool {
+	stringAnswer := in1.Answer[0].String()
+	stringAnswer += in1.Answer[1].String()
+	string2Answer := in2.Answer[0].String()
+	if questionDNS.Qtype == 2 &&
+		strings.Contains(stringAnswer, "ns1.dnzdns.com.") &&
+		strings.Contains(stringAnswer, "ns2.dnzdns.com.") &&
+		(strings.Contains(string2Answer, "ns1.dnzdns.com.") || strings.Contains(string2Answer, "ns2.dnzdns.com.")) {
+		return true
+	}
+	return false
 }
