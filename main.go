@@ -184,6 +184,12 @@ func main() {
 			continue
 		}
 
+		// // ignora domínios como 'a0.meuspf.com.'
+		if ignoreA0MeuSpfComDomain(dnsQ) {
+			fmt.Printf("-")
+			continue
+		}
+
 		// ignora domínios como o exemplo a seguir
 		// 4.a.a.6.f.3.4.4.4.2.2.3.e.1.b.c.0.6.1.0.0.4.0.0.c.0.e.0.4.0.8.2.ip6.arpa.
 		if ignoreDomainsIP6Arpa(dnsQ) {
@@ -242,6 +248,13 @@ func main() {
 		// e for do Tipo NS
 		// nos ignoraremos
 		if ignoreQuestionsInitNumberMeuSpf(dnsQ) {
+			fmt.Printf("-")
+			continue
+		}
+
+		// ignora as questões onde o domínio inicializa com essa expressão
+		// ex.: 20385.meuspf.com.
+		if verifiedQuestionsInitNumberAndMeuSpf(dnsQ) {
 			fmt.Printf("-")
 			continue
 		}
@@ -1070,6 +1083,16 @@ func ignoreNs1Ns2AsAnsweredAtLeastOnce(questionDNS QuestionDNS, in1, in2 *dns.Ms
 		strings.Contains(stringAnswer, "ns1.dnzdns.com.") &&
 		strings.Contains(stringAnswer, "ns2.dnzdns.com.") &&
 		(strings.Contains(string2Answer, "ns1.dnzdns.com.") || strings.Contains(string2Answer, "ns2.dnzdns.com.")) {
+		return true
+	}
+	return false
+}
+
+// ignoreA0MeuSpfComDomain
+// ignora domínios como 'a0.meuspf.com.'
+func ignoreA0MeuSpfComDomain(questionDNS QuestionDNS) bool {
+	qName := strings.ToLower(questionDNS.Name)
+	if questionDNS.Qtype == 16 && strings.Contains(qName, "a0.meuspf.com.") {
 		return true
 	}
 	return false
