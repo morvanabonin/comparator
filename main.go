@@ -541,6 +541,15 @@ func compare() {
 			continue
 		}
 
+		// ignoreGarbagePTRMeuSpf
+		// ignora quando a resposta do antigo é
+		// "00000000.meuspf.com."
+		if ignoreGarbagePTRMeuSpf(dnsQ, in1, in2) {
+			fmt.Printf("-")
+			waitCompare.Done()
+			continue
+		}
+
 		// se o tipo for A e a resposta do sistema antigo for maior que 0 e
 		// a resposta do DNS novo for igual a 0, ignorar
 		if dnsQ.Qtype == 1 && len(in1.Answer) > 0 && len(in2.Answer) == 0 {
@@ -1114,6 +1123,18 @@ func ignoreWhenOldDNSNotDMARCAnswered(questionDNS QuestionDNS, in1, in2 *dns.Msg
 	stringAnswer := in2.Answer[0].String()
 	if questionDNS.Qtype == 16 && len(in1.Answer) == 0 &&
 		strings.Contains(stringAnswer, "v=DMARC1;p=reject;") {
+		return true
+	}
+	return false
+}
+
+// ignoreGarbagePTRMeuSpf
+// ignora quando a resposta do antigo é
+// "00000000.meuspf.com."
+func ignoreGarbagePTRMeuSpf(questionDNS QuestionDNS, in1, in2 *dns.Msg) bool {
+	stringAnswer := in1.Answer[0].String()
+	if questionDNS.Qtype == 12 && strings.Contains(stringAnswer, "00000000.meuspf.com.") &&
+		len(in2.Answer) == 0 {
 		return true
 	}
 	return false
