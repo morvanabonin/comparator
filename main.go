@@ -30,22 +30,22 @@ type (
 
 // Dados já do teste real
 // prod
-const (
-	IpAddress1 = "172.30.1.242" // IP do atual DNS
-	Port1      = ":53"
-	IpAddress2 = "127.0.0.1" // IP do serviço que ficará o novo DNS
-	Port2      = ":53"
-	ChannelQtd = 100
-)
+// const (
+	// IpAddress1 = "172.30.1.242" // IP do atual DNS
+	// Port1      = ":53"
+	// IpAddress2 = "127.0.0.1" // IP do serviço que ficará o novo DNS
+	// Port2      = ":53"
+	// ChannelQtd = 100
+// )
 
 // testes
-//const (
-//	IpAddress1 = "192.168.101.117" // "172.30.1.242" IP do atual DNS
-//	Port1      = ":53"
-//	IpAddress2 = "192.168.101.117" // IP do serviço que ficará o novo DNS
-//	Port2      = ":1553"
-//	ChannelQtd = 1
-//)
+const (
+	IpAddress1 = "172.30.1.242" // "172.30.1.242" IP do atual DNS
+	Port1      = ":53"
+	IpAddress2 = "10.12.0.21" // IP do serviço que ficará o novo DNS
+	Port2      = ":53"
+	ChannelQtd = 1
+)
 
 var (
 	IgnoreDomains = []string{
@@ -132,6 +132,9 @@ func main() {
 
 	// testes
 	// pathFile := "/var/log/dinamize/dev/morvana.bonin/dns-questions/Questions-DNS.json"
+	// pathFile := "/var/log/dinamize/dev/morvana.bonin/dns-questions/questions-dns.json"
+	// pathFile := "logs/questions-dns3.json"
+	
 
 	path := strings.TrimSpace(filepath.Clean(pathFile))
 
@@ -184,7 +187,7 @@ func main() {
 			continue
 		}
 
-		// // ignora domínios como 'a0.meuspf.com.'
+		// ignora domínios como 'a0.meuspf.com.'
 		if ignoreA0MeuSpfComDomain(dnsQ) {
 			fmt.Printf("-")
 			continue
@@ -197,6 +200,12 @@ func main() {
 			continue
 		}
 
+		// ignoreDomainsByInitialization ignore domínios de que inicializam com
+		// www.
+		// blog.
+		// tw.
+		// staging.
+		// home.
 		if ignoreDomainsByInitialization(dnsQ.Name) {
 			fmt.Printf("-")
 			continue
@@ -343,7 +352,7 @@ func compare() {
 			in2, _, errExchange2 = client2DNS.Exchange(m, IpAddress2+Port2)
 		}
 
-		// se erro nas duas respostas não for nil e os dois tiverem dado timeout, iremos considerar como igual.
+		// se o erro nas duas respostas não for nil e os dois tiverem dado timeout, iremos considerar como igual.
 		if errExchange1 != nil && errExchange2 != nil {
 			if strings.Contains(errExchange1.Error(), "timeout") && strings.Contains(errExchange2.Error(), "timeout") {
 				fmt.Printf("=")
@@ -403,7 +412,7 @@ func compare() {
 			waitCompare.Done()
 			continue
 		}
-
+		
 		// ignoreNs1Ns2AsAnsweredAtLeastOnce
 		// ignorar quando
 		// houver no resposta do antigo sistema ns1.dnzdns.com. e ns2.dnzdns.com.
@@ -630,25 +639,31 @@ func compare() {
 
 		// Verifica se as duas respostas são idênticas
 		// caso não seja, grava em arquivo as respostas para consulta
-		if !answerExist(in1.Answer, in2.Answer) {
+		if len(in1.Answer) != 0 && len(in2.Answer) != 0 {
+			if answersAreEqual(in1.Answer, in2.Answer) {
+				
+				// Aqui vai à lógica de caso seja diferente as respostas, mas essa for do tipo TXT e v=spf1
+				// ordenar os IPs de retorno, ignorando o
+				// MX e /32 e
+				// comparar os mesmos
+				if dnsQ.Qtype == 16 {
+					// fmt.Println("in1.Answer", in1.Answer)
+					// fmt.Println("in2.Answer", in2.Answer)
+					if spfAnswersCompareIps(in1.Answer, in2.Answer) {
+						fmt.Printf("=")
+						waitCompare.Done()
+						continue
+					}
+				}
 
-			// Aqui vai à lógica de caso seja diferente as respostas, mas essa for do tipo TXT e v=spf1
-			// ordenar os IPs de retorno, ignorando o
-			// MX e /32 e
-			// comparar os mesmos
-			if spfAnswersCompareIps(in1.Answer, in2.Answer) {
-				fmt.Printf("=")
+				fmt.Printf("!")
+
+				// gravar em um file as queries de respostas
+				msg := fmt.Sprintf("As respostas da questão (%+v) não são idênticas [%+v] e [%+v]", m.Question, in1.Answer, in2.Answer)
+				writeAnswerFile(msg)
 				waitCompare.Done()
 				continue
 			}
-
-			fmt.Printf("!")
-
-			// gravar em um file as queries de respostas
-			msg := fmt.Sprintf("As respostas da questão (%+v) não são idênticas [%+v] e [%+v]", m.Question, in1.Answer, in2.Answer)
-			writeAnswerFile(msg)
-			waitCompare.Done()
-			continue
 		}
 
 		// Verifica se veio Extra no retorno do DNS
@@ -678,7 +693,7 @@ func compare() {
 
 			// Verifica se os dois Extras são idênticos
 			// caso não seja, grava em arquivo as respostas para consulta
-			if !answerExist(in1.Extra, in2.Extra) {
+			if !answersAreEqual(in1.Extra, in2.Extra) {
 				fmt.Printf("!")
 
 				// gravar em um file as queries de respostas
@@ -909,34 +924,23 @@ func timeNow() string {
 	return time.Now().Format("02-Jan-2006 15:04:05")
 }
 
-// answerExist verifica se as respostas são iguais
-func answerExist(m, m2 []dns.RR) bool {
-	var exist []bool
-	var check []bool
+// answersAreEqual verifica se as respostas são iguais
+func answersAreEqual(m, m2 []dns.RR) bool {
 
-	for range m2 {
-		check = append(check, false)
-	}
-
-	for i, v1 := range m {
-		exist = append(exist, false)
-
-		for i2, v2 := range m2 {
-			if v1.String() == v2.String() && !check[i2] {
-				exist[i] = true
-				check[i2] = true
+	for _, v1 := range m {
+		
+		for _, v2 := range m2 {
+			ans1 := strings.Join(strings.Fields(v1.String()), " ")
+			ans2 := strings.Join(strings.Fields(v2.String()), " ")
+			
+			if strings.Compare(ans1, ans2) == 0 {
+				return true
 				break
 			}
 		}
 	}
-
-	for _, v := range exist {
-		if !v {
-			return false
-		}
-	}
-
-	return true
+	
+	return false
 }
 
 // contains verifica que caso o tamanho das respostas Extras sejam de tamanho diferente,
@@ -952,16 +956,25 @@ func contains(ex, ex2 []dns.RR) bool {
 	return false
 }
 
+// pega a resposta de um e de outro e compara se elas são iguais
+
 // spfAnswersCompareIps
 // Aqui vai à lógica de caso seja diferente as respostas, mas essa for do tipo TXT e v=spf1
 // ordenar os IPs de retorno, ignorando o
 // MX e /32 e
 // comparar os mesmos
-func spfAnswersCompareIps(resp1, resp2 []dns.RR) bool {
-	var retArrayIps1 []string
-	var retArrayIps2 []string
 
-	for _, v1 := range resp1 {
+
+func spfAnswersCompareIps(resp1, resp2 []dns.RR) bool {
+	var (
+		retArrayIps1 []string
+		retArrayIps2 []string
+	)
+
+	for _ , v1 := range resp1 {
+		// pega a resposta
+		// limpa ela com a função arrayIps, pegando apenas os ips
+		// e faz split dela retornando um array de IPs
 		retArrayIps1 = arrayIps(v1.String())
 		for _, v2 := range resp2 {
 			retArrayIps2 = arrayIps(v2.String())
@@ -987,8 +1000,10 @@ func arrayIps(v string) []string {
 // orderAndCompare faz comparação entre os IPs retornados na resposta do tipo TXT
 // [ip4:192.168.101.0/32 ip4:195.195.0.0/25 ip4:195.195.1.0/25 ip4:195.195.2.0/26 ip4:195.195.4.0/26]
 func orderAndCompare(ips1, ips2 []string) bool {
-	var exist []bool
-	var check []bool
+	var (
+		exist []bool
+		check []bool
+	)
 
 	for range ips2 {
 		check = append(check, false)
@@ -1004,7 +1019,7 @@ func orderAndCompare(ips1, ips2 []string) bool {
 		}
 
 		for i2, ip2 := range ips2 {
-			if ip1 == ip2 && !check[i2] {
+			if ip1 == ip2 && check[i2] == false {
 				exist[i] = true
 				check[i2] = true
 				break
@@ -1013,7 +1028,7 @@ func orderAndCompare(ips1, ips2 []string) bool {
 	}
 
 	for _, v := range exist {
-		if !v {
+		if v == false {
 			return false
 		}
 	}
@@ -1078,31 +1093,38 @@ func getIPFromAnswer(resp string) net.IP {
 // if qName tem 1631878458828.myrlk.com., qType = 1 e nas repostas do antigo sistema tiver os IPs 18.189.133.24 e 3.139.183.150
 // e a resposta do novo sistema for nil, ignora como sendo certo.
 func ignoreGarbageMyrlkDomain(questionDNS QuestionDNS, in1, in2 *dns.Msg) bool {
-	stringAnswer := in1.Answer[0].String()
-	stringAnswer += in1.Answer[1].String()
-	if questionDNS.Qtype == 1 &&
-		strings.Contains(stringAnswer, "18.189.133.24") &&
-		strings.Contains(stringAnswer, "3.139.183.150") &&
-		len(in2.Answer) == 0 {
-		return true
+	// verificação se in1 tem resposta, ou seja, se o len é maior que 0
+	if len(in1.Answer) == 2 {
+		stringAnswer := in1.Answer[0].String()
+		stringAnswer += in1.Answer[1].String()
+		if questionDNS.Qtype == 1 &&
+			strings.Contains(stringAnswer, "18.189.133.24") &&
+			strings.Contains(stringAnswer, "3.139.183.150") &&
+			len(in2.Answer) == 0 {
+			return true
+		}
 	}
 	return false
 }
 
 // ignoreNs1Ns2AsAnsweredAtLeastOnce
 // ignorar quando
-// houver no resposta do antigo sistema ns1.dnzdns.com. e ns2.dnzdns.com.
+// houver respostas do antigo sistema, como, ns1.dnzdns.com. e ns2.dnzdns.com.
 // e quando no novo houver a resposta ns1.dnzdns.com. ou ns2.dnzdns.com.
 func ignoreNs1Ns2AsAnsweredAtLeastOnce(questionDNS QuestionDNS, in1, in2 *dns.Msg) bool {
-	stringAnswer := in1.Answer[0].String()
-	stringAnswer += in1.Answer[1].String()
-	string2Answer := in2.Answer[0].String()
-	if questionDNS.Qtype == 2 &&
-		strings.Contains(stringAnswer, "ns1.dnzdns.com.") &&
-		strings.Contains(stringAnswer, "ns2.dnzdns.com.") &&
-		(strings.Contains(string2Answer, "ns1.dnzdns.com.") || strings.Contains(string2Answer, "ns2.dnzdns.com.")) {
-		return true
+	// verificação se in1 e in2 tem resposta, ou seja, se o len é maior que 0
+	if len(in1.Answer) == 2 && len(in2.Answer) > 0 {
+		stringAnswer := in1.Answer[0].String()
+		stringAnswer += in1.Answer[1].String()
+		string2Answer := in2.Answer[0].String()
+		if questionDNS.Qtype == 2 &&
+			strings.Contains(stringAnswer, "ns1.dnzdns.com.") &&
+			strings.Contains(stringAnswer, "ns2.dnzdns.com.") &&
+			(strings.Contains(string2Answer, "ns1.dnzdns.com.") || strings.Contains(string2Answer, "ns2.dnzdns.com.")) {
+			return true
+		}
 	}
+	
 	return false
 }
 
@@ -1120,10 +1142,13 @@ func ignoreA0MeuSpfComDomain(questionDNS QuestionDNS) bool {
 // ignorar quando o antigo não responder, mas o novo responder com a seguinte resposta
 // "v=DMARC1;p=reject;"
 func ignoreWhenOldDNSNotDMARCAnswered(questionDNS QuestionDNS, in1, in2 *dns.Msg) bool {
-	stringAnswer := in2.Answer[0].String()
-	if questionDNS.Qtype == 16 && len(in1.Answer) == 0 &&
-		strings.Contains(stringAnswer, "v=DMARC1;p=reject;") {
-		return true
+	// verificação se in2 tem resposta, ou seja, se o len é maior que 0
+	if len(in2.Answer) > 0 {
+		stringAnswer := in2.Answer[0].String()
+		if questionDNS.Qtype == 16 && len(in1.Answer) == 0 &&
+			strings.Contains(stringAnswer, "v=DMARC1;p=reject;") {
+			return true
+		}
 	}
 	return false
 }
@@ -1132,10 +1157,13 @@ func ignoreWhenOldDNSNotDMARCAnswered(questionDNS QuestionDNS, in1, in2 *dns.Msg
 // ignora quando a resposta do antigo é
 // "00000000.meuspf.com."
 func ignoreGarbagePTRMeuSpf(questionDNS QuestionDNS, in1, in2 *dns.Msg) bool {
-	stringAnswer := in1.Answer[0].String()
-	if questionDNS.Qtype == 12 && strings.Contains(stringAnswer, "00000000.meuspf.com.") &&
-		len(in2.Answer) == 0 {
-		return true
+	// verificação se in1 tem resposta, ou seja, se o len é maior que 0
+	if len(in1.Answer) > 0 {
+		stringAnswer := in1.Answer[0].String()
+		if questionDNS.Qtype == 12 && strings.Contains(stringAnswer, "00000000.meuspf.com.") &&
+			len(in2.Answer) == 0 {
+			return true
+		}
 	}
 	return false
 }
